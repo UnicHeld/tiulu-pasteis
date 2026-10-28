@@ -1,0 +1,4 @@
+interface:
+  display_name: "nova-adr"
+  short_description: "Workflow de desenvolvimento da Tiulu Pastéis"
+  default_prompt: "Use $nova-adr para executar o workflow neste projeto."

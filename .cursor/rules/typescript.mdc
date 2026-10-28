@@ -1,0 +1,11 @@
+---
+description: Contratos de TypeScript, API e domínio
+globs:
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
+  - "tests/**/*.ts"
+alwaysApply: false
+---
+
+Seguir `AGENTS.md` e `.claude/rules/typescript.md`. Fontes de contratos em `docs/arquitetura/`.
+Validação: `.claude/project.json`. Não duplicar regras ou confiar em autorização só na interface.

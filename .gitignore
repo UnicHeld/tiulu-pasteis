@@ -3,3 +3,11 @@ dist/
 dist-server/
 .env
 coverage/
+.env.*
+!.env.example
+.notebook/
+CLAUDE.local.md
+.claude/settings.local.json
+**/__pycache__/
+*.pyc
+.validation/

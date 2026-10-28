@@ -1,0 +1,13 @@
+---
+description: ADRs vinculam implementação em paths regidos
+globs:
+  - "src/**"
+  - "db/**"
+  - "docs/**"
+  - ".github/**"
+alwaysApply: false
+---
+
+Consultar `docs/decisoes/README.md` antes de alterar paths regidos por ADR aceito.
+Seguir `AGENTS.md` e `docs/processos/registro-de-decisoes.md`. Corpo finalizado é imutável;
+mudança de decisão exige ADR novo. Não inventar aprovação.

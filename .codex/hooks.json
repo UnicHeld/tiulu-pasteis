@@ -1,0 +1,16 @@
+{
+  "description": "Carrega os comandos de validação no início ou retomada da sessão.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"$(git rev-parse --show-toplevel)/.codex/project.json\""
+          }
+        ]
+      }
+    ]
+  }
+}

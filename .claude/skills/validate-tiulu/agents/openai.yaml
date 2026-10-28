@@ -1,0 +1,4 @@
+interface:
+  display_name: "validate-tiulu"
+  short_description: "Workflow de desenvolvimento da Tiulu Pastéis"
+  default_prompt: "Use $validate-tiulu para executar o workflow neste projeto."

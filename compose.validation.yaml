@@ -1,0 +1,63 @@
+name: tiulu-validation
+
+services:
+  quality:
+    build:
+      context: .
+      dockerfile: Dockerfile.validation
+    working_dir: /workspace
+    environment:
+      APP_ORIGIN: http://localhost:5173
+      NODE_ENV: test
+    volumes:
+      - .:/workspace:ro
+      - /workspace/node_modules
+      - /workspace/dist
+      - /workspace/dist-server
+    entrypoint: ["sh", "-ec"]
+    command:
+      - >-
+        cp -a /app/node_modules/. /workspace/node_modules/ &&
+        npm run format:check && npm run lint && npm run typecheck && npm test &&
+        npm run build && python3 scripts/check-docs.py &&
+        python3 -m unittest discover -s tests/harness -p 'test_*.py'
+  db-test:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: tiulu_test
+      POSTGRES_USER: tiulu_test
+      POSTGRES_PASSWORD: isolated-test-only
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tiulu_test -d tiulu_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  integration:
+    build:
+      context: .
+      dockerfile: Dockerfile.validation
+    working_dir: /workspace
+    environment:
+      NODE_ENV: test
+      APP_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgres://tiulu_test:isolated-test-only@db-test:5432/tiulu_test
+      RUN_DB_TESTS: "1"
+    volumes:
+      - .:/workspace:ro
+      - /workspace/node_modules
+    depends_on:
+      db-test:
+        condition: service_healthy
+    entrypoint: ["sh", "-ec"]
+    command:
+      - >-
+        cp -a /app/node_modules/. /workspace/node_modules/ &&
+        npm run db:migrate && npm test
+  harness:
+    image: node:22-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:ro
+    command: ["npx", "--yes", "harness-score@1.6.5", ".", "--min-level", "4"]

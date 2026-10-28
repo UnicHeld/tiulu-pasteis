@@ -1,0 +1,4 @@
+interface:
+  display_name: "review-tiulu"
+  short_description: "Workflow de desenvolvimento da Tiulu Pastéis"
+  default_prompt: "Use $review-tiulu para executar o workflow neste projeto."

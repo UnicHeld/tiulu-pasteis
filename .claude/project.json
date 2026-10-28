@@ -1,0 +1,12 @@
+{
+  "tools": [
+    {
+      "when": "ts|tsx|js|json|yaml|md",
+      "commit": [
+        "docker compose -f compose.validation.yaml run --rm quality",
+        "docker compose -f compose.validation.yaml run --rm integration",
+        "docker compose -f compose.validation.yaml run --rm harness"
+      ]
+    }
+  ]
+}

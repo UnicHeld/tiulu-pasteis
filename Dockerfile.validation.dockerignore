@@ -1,0 +1,14 @@
+.git
+node_modules
+dist
+dist-server
+.env
+.env.*
+!.env.example
+.notebook
+CLAUDE.local.md
+.claude/settings.local.json
+coverage
+.validation
+**/__pycache__
+*.pyc

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Qualidade e harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Documentação e ADRs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python3 scripts/check-docs.py --base "$BASE_SHA"
+          else
+            python3 scripts/check-docs.py
+          fi
+      - run: python3 -m unittest discover -s tests/harness -p 'test_*.py'
+      - name: Harness L4
+        run: npx --yes harness-score@1.6.5 . --min-level 4
+  integration:
+    name: Integração PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: tiulu_test
+          POSTGRES_USER: tiulu_test
+          POSTGRES_PASSWORD: isolated-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U tiulu_test -d tiulu_test"
+          --health-interval=2s --health-timeout=3s --health-retries=20
+    env:
+      NODE_ENV: test
+      APP_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgres://tiulu_test:isolated-test-only@localhost:5432/tiulu_test
+      RUN_DB_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm test

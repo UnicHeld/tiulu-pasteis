@@ -1,0 +1,4 @@
+interface:
+  display_name: "spec-driven"
+  short_description: "Workflow de desenvolvimento da Tiulu Pastéis"
+  default_prompt: "Use $spec-driven para executar o workflow neste projeto."
