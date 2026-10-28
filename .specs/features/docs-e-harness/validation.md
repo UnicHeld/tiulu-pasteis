@@ -35,4 +35,6 @@ esses nove foram executados e passaram na execução separada de integration.
   itens impede L4; não foram adicionados sem necessidade do projeto.
 - ADR-0001 permanece proposto, sem alegação de aprovação formal.
 - Não foram executados navegador, aparelhos reais, OAuth ou pagamento externo.
-- O CI remoto é verificado separadamente após o envio; este registro descreve a validação local.
+- O primeiro CI remoto concluiu qualidade/harness e integração com sucesso. O aviso de runtime
+  descontinuado das actions motivou atualização para versões oficiais verificadas; o head final
+  é conferido separadamente na entrega.
