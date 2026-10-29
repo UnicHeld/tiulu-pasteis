@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, it, expect } from "vitest";
+import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
 import { buildApp } from "../src/server/app";
 import { pool } from "../src/server/db";
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -10,6 +10,56 @@ afterAll(async () => {
   await pool.end();
 });
 describe("Proteção HTTP", () => {
+  it("exige login antes de retornar detalhes de um pedido pelo identificador do QR", async () => {
+    const r = await app.inject(
+      "/api/orders/10000000-0000-4000-8000-000000000001",
+    );
+    expect(r.statusCode).toBe(401);
+    expect(r.headers["cache-control"]).toBe("no-store");
+  });
+  it.each([
+    ["development", "1", "Verocard ainda não habilitado."],
+    ["development", "0", "Atendemos de segunda a sexta"],
+    ["production", "1", "Atendemos de segunda a sexta"],
+    ["test", "1", "Atendemos de segunda a sexta"],
+  ])(
+    "limita liberação do expediente a development (%s, %s)",
+    async (env, flag, error) => {
+      vi.stubEnv("NODE_ENV", env);
+      vi.stubEnv("ALLOW_OUT_OF_HOURS_ORDERS", flag);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-31T01:00:00Z"));
+      try {
+        const r = await app.inject({
+          method: "POST",
+          url: "/api/orders",
+          headers: { origin: "http://localhost:5173" },
+          payload: {
+            name: "Teste",
+            items: [
+              {
+                productId: "00000000-0000-4000-8000-000000000001",
+                quantity: 1,
+              },
+            ],
+            pickupAccepted: true,
+            location: {
+              latitude: -20.78551898,
+              longitude: -49.35995068,
+              accuracy: 10,
+              timestamp: Date.now(),
+            },
+            paymentMethod: "verocard",
+          },
+        });
+        expect(r.statusCode).toBe(409);
+        expect(r.json().error).toContain(error);
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
   it("rejeita mutação de outra origem antes de acessar banco", async () => {
     const r = await app.inject({
       method: "POST",

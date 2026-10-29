@@ -18,6 +18,47 @@ const product: Product = {
   emoji: "🥟",
 };
 describe("Pedidos", () => {
+  it("permite confirmar chegada e expirar, mas bloqueia preparo após expiração", () => {
+    expect(() =>
+      assertTransition("awaiting_arrival", "preparing"),
+    ).not.toThrow();
+    expect(() => assertTransition("awaiting_arrival", "expired")).not.toThrow();
+    expect(() => assertTransition("expired", "preparing")).toThrow();
+    expect(() => assertTransition("awaiting_arrival", "ready")).toThrow();
+  });
+  it("exige aceite da retirada e rejeita agendamento no novo fluxo", () => {
+    const input = {
+      name: "Cliente",
+      items: [{ productId: product.id, quantity: 1 }],
+      paymentMethod: "pix",
+    };
+    expect(orderInput.safeParse(input).success).toBe(false);
+    expect(
+      orderInput.safeParse({
+        ...input,
+        pickupAccepted: true,
+        location: {
+          latitude: -20.78551898,
+          longitude: -49.35995068,
+          accuracy: 10,
+          timestamp: Date.now(),
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      orderInput.safeParse({
+        ...input,
+        pickupAccepted: true,
+        location: {
+          latitude: -20.78551898,
+          longitude: -49.35995068,
+          accuracy: 10,
+          timestamp: Date.now(),
+        },
+        scheduledAt: "2026-10-28T15:00:00Z",
+      }).success,
+    ).toBe(false);
+  });
   it("aplica promoção definida no catálogo", () =>
     expect(
       totalOrder(
@@ -60,19 +101,43 @@ describe("Pedidos", () => {
         orderInput.safeParse({
           name: "Aluno",
           items: [{ productId: product.id, quantity }],
+          pickupAccepted: true,
+          location: {
+            latitude: -20.78551898,
+            longitude: -49.35995068,
+            accuracy: 10,
+            timestamp: Date.now(),
+          },
           paymentMethod: "pix",
         }).success,
       ).toBe(false);
   });
   it("rejeita sacola vazia", () =>
     expect(
-      orderInput.safeParse({ name: "Aluno", items: [], paymentMethod: "pix" })
-        .success,
+      orderInput.safeParse({
+        name: "Aluno",
+        items: [],
+        pickupAccepted: true,
+        location: {
+          latitude: -20.78551898,
+          longitude: -49.35995068,
+          accuracy: 10,
+          timestamp: Date.now(),
+        },
+        paymentMethod: "pix",
+      }).success,
     ).toBe(false));
   it("remove preço enviado pelo cliente", () => {
     const result = orderInput.parse({
       name: " Aluno ",
       items: [{ productId: product.id, quantity: 1, price: 1 }],
+      pickupAccepted: true,
+      location: {
+        latitude: -20.78551898,
+        longitude: -49.35995068,
+        accuracy: 10,
+        timestamp: Date.now(),
+      },
       paymentMethod: "card",
       total: 1,
     });
@@ -103,6 +168,17 @@ describe("Pedidos", () => {
     expect(() => assertSchedule("2026-11-05T15:00:00Z", now)).toThrow();
     expect(() => assertSchedule("2026-10-31T15:00:00Z", now)).toThrow();
     expect(() => assertSchedule("2026-10-28T01:00:00Z", now)).toThrow();
+  });
+  it("libera expediente por opção sem remover limites de antecedência", () => {
+    const now = new Date("2026-10-31T01:00:00Z");
+    expect(() => assertSchedule(undefined, now, true)).not.toThrow();
+    expect(() =>
+      assertSchedule("2026-10-31T01:30:00Z", now, true),
+    ).not.toThrow();
+    expect(() => assertSchedule("2026-10-31T01:05:00Z", now, true)).toThrow(
+      "Agende entre 15 minutos e 7 dias de antecedência.",
+    );
+    expect(() => assertSchedule("2026-11-08T01:00:00Z", now, true)).toThrow();
   });
   it("bloqueia pedido imediato fora do expediente", () =>
     expect(() =>

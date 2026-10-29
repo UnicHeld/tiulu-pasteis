@@ -5,6 +5,12 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { z, ZodError } from "zod";
 import { pool, hash } from "./db.js";
 import {
+  priceOrder,
+  pizzaIngredients,
+  comboPrices,
+} from "../domain/catalog.js";
+import { assertCampusLocation, LocationError } from "../domain/campus.js";
+import {
   orderInput,
   totalOrder,
   effectivePrice,
@@ -56,6 +62,8 @@ export async function buildApp() {
       return reply
         .code(400)
         .send({ error: "Dados inválidos. Confira os campos." });
+    if (error instanceof LocationError)
+      return reply.code(403).send({ error: error.message });
     if (error instanceof DomainError)
       return reply.code(409).send({ error: error.message });
     if (
@@ -105,13 +113,21 @@ export async function buildApp() {
   });
   app.get("/api/menu", async () => ({
     products: (
-      await pool.query("SELECT * FROM products ORDER BY category DESC,name")
+      await pool.query(
+        "SELECT * FROM products WHERE archived=false ORDER BY category DESC,name",
+      )
     ).rows,
+    pizzaIngredients,
+    promotion: { comboPrices },
     store: {
       name: "Tiulu Pastéis",
       hours: "Segunda a sexta, 9h às 21h",
       paymentMode: "pickup",
       verocard: false,
+      orderMode: "campus_pickup",
+      pickupLocation:
+        "Fundos da ASTAIBILCE, no campus IBILCE/UNESP — São José do Rio Preto",
+      onlinePaymentEnabled: false,
     },
   }));
   app.get("/api/me", async (req) => {
@@ -120,7 +136,6 @@ export async function buildApp() {
       return {
         user: null,
         googleEnabled: Boolean(process.env.GOOGLE_CLIENT_ID),
-        adminPasswordEnabled: Boolean(process.env.ADMIN_PASSWORD),
       };
     const count = s.user_id
       ? (
@@ -241,20 +256,45 @@ export async function buildApp() {
       .map((x) => x.trim().toLowerCase())
       .includes(user.email.toLowerCase());
     await createSession(reply, result.rows[0].id, admin);
-    return reply.redirect("/");
+    return reply.redirect(admin ? "/gestao" : "/");
   });
   app.post(
     "/api/orders",
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (req, reply) => {
       const input = orderInput.parse(req.body);
-      assertSchedule(input.scheduledAt);
+      assertSchedule(
+        input.scheduledAt,
+        new Date(),
+        process.env.NODE_ENV === "development" &&
+          process.env.ALLOW_OUT_OF_HOURS_ORDERS === "1",
+      );
       if (input.paymentMethod === "verocard")
         throw new DomainError("Verocard ainda não habilitado.");
       const s = await session(req.cookies.session);
+      if (!s?.user_id)
+        return reply
+          .code(401)
+          .send({ error: "Entre na sua conta para registrar o pedido." });
+      assertCampusLocation(input.location);
+      await expireOrders();
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        // Serializa o limite por conta, inclusive em requisições concorrentes.
+        await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+          s.user_id,
+        ]);
+        const active = (
+          await client.query(
+            "SELECT count(*)::int AS count FROM orders WHERE user_id=$1 AND status IN ('received','preparing','ready','awaiting_arrival')",
+            [s.user_id],
+          )
+        ).rows[0].count;
+        if (active >= 3)
+          throw new DomainError(
+            "Você já tem três pedidos ativos. Aguarde a retirada ou solicite o cancelamento no balcão.",
+          );
         const products = (
           await client.query(
             "SELECT * FROM products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
@@ -262,38 +302,52 @@ export async function buildApp() {
           )
         ).rows as Product[];
         const total = totalOrder(input.items, products);
+        const { discount } = priceOrder(input.items, products);
         const id = randomUUID();
         const token = randomBytes(32).toString("hex");
         await client.query(
-          "INSERT INTO orders(id,tracking_hash,user_id,customer_name,payment_method,total,scheduled_at,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+          "INSERT INTO orders(id,tracking_hash,user_id,customer_name,payment_method,total,notes,status,stock_reserved,expires_at,pickup_accepted_at,confirmed_at,discount_total) VALUES($1,$2,$3,$4,$5,$6,$7,'received',true,NULL,now(),now(),$8)",
           [
             id,
             await hash(token),
-            s?.user_id || null,
+            s.user_id,
             input.name,
             input.paymentMethod,
             total,
-            input.scheduledAt || null,
             input.notes,
+            discount,
           ],
         );
         for (const item of input.items) {
           const p = products.find((p) => p.id === item.productId)!;
-          await client.query(
-            "INSERT INTO order_items(order_id,product_id,name,unit_price,quantity) VALUES($1,$2,$3,$4,$5)",
-            [id, p.id, p.name, effectivePrice(p), item.quantity],
-          );
           await client.query("UPDATE products SET stock=stock-$1 WHERE id=$2", [
             item.quantity,
             p.id,
           ]);
+          await client.query(
+            "INSERT INTO order_items(order_id,product_id,name,unit_price,quantity,ingredients) VALUES($1,$2,$3,$4,$5,$6)",
+            [
+              id,
+              p.id,
+              p.name,
+              effectivePrice(p),
+              item.quantity,
+              JSON.stringify(
+                item.ingredients.map(
+                  (id) =>
+                    pizzaIngredients.find((ingredient) => ingredient.id === id)!
+                      .label,
+                ),
+              ),
+            ],
+          );
         }
         await client.query(
           "INSERT INTO order_events(order_id,status) VALUES($1,'received')",
           [id],
         );
         await client.query("COMMIT");
-        return reply.code(201).send({ id, token, total });
+        return reply.code(201).send({ id, token, total, status: "received" });
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -306,9 +360,10 @@ export async function buildApp() {
     const { token } = z
       .object({ token: z.string().regex(/^[a-f0-9]{64}$/) })
       .parse(req.params);
+    await expireOrders();
     const order = (
       await pool.query(
-        "SELECT id,customer_name,status,payment_method,payment_status,total,scheduled_at,created_at FROM orders WHERE tracking_hash=$1",
+        "SELECT id,customer_name,status,payment_method,payment_status,total,discount_total,scheduled_at,created_at,expires_at,confirmed_at FROM orders WHERE tracking_hash=$1",
         [await hash(token)],
       )
     ).rows[0];
@@ -318,7 +373,7 @@ export async function buildApp() {
       ...order,
       items: (
         await pool.query(
-          "SELECT name,quantity,unit_price FROM order_items WHERE order_id=$1",
+          "SELECT name,quantity,unit_price,ingredients FROM order_items WHERE order_id=$1",
           [order.id],
         )
       ).rows,
@@ -330,17 +385,48 @@ export async function buildApp() {
       ).rows,
     };
   });
+  const orderColumns = `o.id,o.customer_name,o.status,o.payment_status,o.payment_method,o.total,o.discount_total,o.scheduled_at,o.notes,o.created_at,o.expires_at,o.confirmed_at,
+    COALESCE((SELECT json_agg(json_build_object('name',i.name,'quantity',i.quantity,'unit_price',i.unit_price,'ingredients',i.ingredients) ORDER BY i.name) FROM order_items i WHERE i.order_id=o.id),'[]'::json) AS items`;
+  async function expireOrders() {
+    // Sem reserva ou cobrança: expiração não toca no estoque nem no pagamento.
+    await pool.query(`WITH expired AS (
+      UPDATE orders SET status='expired' WHERE status='awaiting_arrival' AND expires_at<=now() RETURNING id
+    ) INSERT INTO order_events(order_id,status) SELECT id,'expired' FROM expired`);
+  }
   app.get("/api/orders", async (req, reply) => {
     const s = await session(req.cookies.session);
     if (!s) return reply.code(401).send({ error: "Entre na sua conta." });
+    await expireOrders();
     return (
       await pool.query(
-        s.is_admin
-          ? "SELECT id,customer_name,status,payment_status,payment_method,total,scheduled_at,notes,created_at FROM orders ORDER BY created_at DESC LIMIT 100"
-          : "SELECT id,customer_name,status,payment_status,payment_method,total,scheduled_at,created_at FROM orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100",
+        `SELECT ${orderColumns} FROM orders o ${s.is_admin ? "" : "WHERE o.user_id=$1"}
+       ORDER BY COALESCE(o.confirmed_at,o.created_at) DESC,o.id LIMIT 100`,
         s.is_admin ? [] : [s.user_id],
       )
     ).rows;
+  });
+  app.get("/api/orders/:id", async (req, reply) => {
+    const s = await session(req.cookies.session);
+    if (!s) return reply.code(401).send({ error: "Entre na sua conta." });
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    await expireOrders();
+    const order = (
+      await pool.query(
+        `SELECT ${orderColumns} FROM orders o WHERE o.id=$1 ${s.is_admin ? "" : "AND o.user_id=$2"}`,
+        s.is_admin ? [id] : [id, s.user_id],
+      )
+    ).rows[0];
+    if (!order)
+      return reply.code(404).send({ error: "Pedido não encontrado." });
+    return {
+      ...order,
+      events: (
+        await pool.query(
+          "SELECT status,created_at FROM order_events WHERE order_id=$1 ORDER BY id",
+          [id],
+        )
+      ).rows,
+    };
   });
   app.get("/api/admin/orders/:id/items", async (req, reply) => {
     const s = await session(req.cookies.session);
@@ -349,7 +435,7 @@ export async function buildApp() {
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
     return (
       await pool.query(
-        "SELECT name,quantity,unit_price FROM order_items WHERE order_id=$1",
+        "SELECT name,quantity,unit_price,ingredients FROM order_items WHERE order_id=$1",
         [id],
       )
     ).rows;
@@ -370,14 +456,65 @@ export async function buildApp() {
     try {
       await client.query("BEGIN");
       const order = (
-        await client.query("SELECT * FROM orders WHERE id=$1 FOR UPDATE", [id])
+        await client.query(
+          "SELECT *,expires_at<=now() AS is_expired FROM orders WHERE id=$1 FOR UPDATE",
+          [id],
+        )
       ).rows[0];
       if (!order) {
         await client.query("ROLLBACK");
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
+      if (order.status === "awaiting_arrival" && order.is_expired) {
+        throw new DomainError("Pedido expirado. Registre um novo pedido.");
+      }
       if (input.status) {
         assertTransition(order.status, input.status);
+        if (input.status === "expired")
+          throw new DomainError("Expiração é automática.");
+        if (
+          order.status === "awaiting_arrival" &&
+          input.status === "preparing"
+        ) {
+          assertSchedule(
+            undefined,
+            new Date(),
+            process.env.NODE_ENV === "development" &&
+              process.env.ALLOW_OUT_OF_HOURS_ORDERS === "1",
+          );
+          if (order.payment_status !== "paid" && !input.paid)
+            throw new DomainError(
+              "Confirme a presença e o pagamento no balcão antes do preparo.",
+            );
+          const items = (
+            await client.query(
+              "SELECT product_id,quantity FROM order_items WHERE order_id=$1 ORDER BY product_id",
+              [id],
+            )
+          ).rows;
+          const products = (
+            await client.query(
+              "SELECT * FROM products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+              [items.map((i) => i.product_id)],
+            )
+          ).rows as Product[];
+          totalOrder(
+            items.map((i) => ({
+              productId: i.product_id,
+              quantity: i.quantity,
+            })),
+            products,
+          );
+          for (const item of items)
+            await client.query(
+              "UPDATE products SET stock=stock-$1 WHERE id=$2",
+              [item.quantity, item.product_id],
+            );
+          await client.query(
+            "UPDATE orders SET stock_reserved=true,confirmed_at=now() WHERE id=$1",
+            [id],
+          );
+        }
         if (
           input.status === "completed" &&
           order.payment_status !== "paid" &&
@@ -392,15 +529,29 @@ export async function buildApp() {
           "INSERT INTO order_events(order_id,status) VALUES($1,$2)",
           [id, input.status],
         );
-        if (input.status === "cancelled")
+        if (input.status === "cancelled" && order.stock_reserved) {
+          await client.query(
+            "SELECT id FROM products WHERE id IN (SELECT product_id FROM order_items WHERE order_id=$1) ORDER BY id FOR UPDATE",
+            [id],
+          );
           await client.query(
             "UPDATE products p SET stock=p.stock+i.quantity FROM order_items i WHERE i.order_id=$1 AND i.product_id=p.id",
             [id],
           );
+        }
+        if (input.status === "cancelled")
+          await client.query(
+            "UPDATE orders SET stock_reserved=false WHERE id=$1",
+            [id],
+          );
       }
       if (input.paid) {
-        if (order.status === "cancelled")
-          throw new DomainError("Pedido cancelado.");
+        if (["cancelled", "expired"].includes(input.status || order.status))
+          throw new DomainError("Pedido encerrado.");
+        if (order.status === "awaiting_arrival" && input.status !== "preparing")
+          throw new DomainError(
+            "Confirme presença e pagamento ao iniciar o preparo.",
+          );
         await client.query(
           "UPDATE orders SET payment_status='paid' WHERE id=$1",
           [id],
