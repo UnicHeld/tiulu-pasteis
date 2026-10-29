@@ -8,42 +8,132 @@ import {
   Minus,
   X,
   Search,
-  Store,
   Heart,
   CheckCircle2,
   LogOut,
   ChefHat,
   Smartphone,
-  Flame,
+  Store,
   Ticket,
+  Flame,
   ChevronRight,
 } from "lucide-react";
-import { effectivePrice, type Product } from "../domain/catalog";
+import {
+  effectivePrice,
+  priceOrder,
+  pizzaIngredients,
+  ingredientLabel,
+  type Product,
+} from "../domain/catalog";
 import "./styles.css";
 import { Modal } from "./Modal";
-const money = (n: number) =>
-  new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(
-    n / 100,
-  );
-const labels: Record<string, string> = {
-  received: "Recebido",
-  preparing: "Em preparo",
-  ready: "Pronto para retirar",
-  completed: "Entregue",
-  cancelled: "Cancelado",
-};
-type Order = {
-  id: string;
-  customer_name: string;
-  status: string;
-  payment_status: string;
-  payment_method: string;
-  total: number;
-  scheduled_at: string | null;
-  created_at: string;
-  notes?: string;
-  items?: { name: string; quantity: number; unit_price: number }[];
-};
+import { MenuProductCard } from "./MenuProductCard";
+import { ComboCard } from "./ComboCard";
+import { CartComboOptions, CartPizzaOptions } from "./CartChoices";
+import {
+  chooseCombo,
+  replaceCartUnit,
+  validCombo,
+  canAddUnit,
+  type Bag,
+  type CartItems,
+} from "./cart";
+import { groupMenuProducts } from "./menu";
+import {
+  money,
+  labels,
+  isClosed,
+  OrderSummary,
+  OrderActions,
+  QRScanner,
+  type Order,
+} from "./OrderDetails";
+const managementPath =
+  window.location.pathname.replace(/\/$/, "") === "/gestao";
+function savedCart(): Record<string, number> {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem("tiulu-cart") || "{}",
+    );
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value).filter(
+        ([id, quantity]) =>
+          /^[a-f0-9-]{36}$/i.test(id) &&
+          typeof quantity === "number" &&
+          Number.isInteger(quantity) &&
+          quantity > 0 &&
+          quantity <= 20,
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+function savedBag(): Bag {
+  const items = savedCart();
+  try {
+    const saved: unknown = JSON.parse(
+      localStorage.getItem("tiulu-cart-config") || "null",
+    );
+    if (!saved || typeof saved !== "object")
+      return { items, combo: null, pizzaId: null };
+    const value = saved as {
+      combo?: { pastelId?: unknown; drinkId?: unknown };
+      pizzaId?: unknown;
+    };
+    const combo =
+      value.combo &&
+      typeof value.combo.pastelId === "string" &&
+      typeof value.combo.drinkId === "string"
+        ? { pastelId: value.combo.pastelId, drinkId: value.combo.drinkId }
+        : null;
+    const pizzaId =
+      typeof value.pizzaId === "string" && items[value.pizzaId] > 0
+        ? value.pizzaId
+        : null;
+    return { items, combo: validCombo(items, combo) ? combo : null, pizzaId };
+  } catch {
+    return { items, combo: null, pizzaId: null };
+  }
+}
+function savedPizzaChoices(): Record<string, string[]> {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem("tiulu-pizza-ingredients") || "{}",
+    );
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value).filter(
+        ([, choices]) =>
+          Array.isArray(choices) &&
+          choices.length <= 3 &&
+          new Set(choices).size === choices.length &&
+          choices.every((id) =>
+            pizzaIngredients.some((ingredient) => ingredient.id === id),
+          ),
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+function savedTracking(): string {
+  try {
+    const value = localStorage.getItem("tiulu-tracking") || "";
+    return /^[a-f0-9]{64}$/.test(value) ? value : "";
+  } catch {
+    return "";
+  }
+}
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 type User = { name: string; isAdmin: boolean; points: number };
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch("/api" + path, {
@@ -51,22 +141,27 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...options?.headers },
   });
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || "Falha na conexão.");
+  if (!response.ok)
+    throw new ApiError(body.error || "Falha na conexão.", response.status);
   return body;
 }
 function App() {
   const [products, setProducts] = useState<Product[]>([]),
     [user, setUser] = useState<User | null>(null),
     [google, setGoogle] = useState(false),
-    [category, setCategory] = useState("Todos"),
+    [category, setCategory] = useState("Promoções"),
     [search, setSearch] = useState(""),
-    [cart, setCart] = useState<Record<string, number>>({}),
+    [bag, setBag] = useState(savedBag),
+    [pizzaChoices, setPizzaChoices] = useState(savedPizzaChoices),
     [modal, setModal] = useState<string | null>(null),
     [view, setView] = useState("menu"),
     [orders, setOrders] = useState<Order[]>([]),
-    [tracking, setTracking] = useState(
-      () => localStorage.getItem("tiulu-tracking") || "",
-    ),
+    [selectedId, setSelectedId] = useState<string | null>(null),
+    [selectedOrder, setSelectedOrder] = useState<Order | null>(null),
+    [orderFilter, setOrderFilter] = useState("active"),
+    [trackingInput, setTrackingInput] = useState(savedTracking),
+    [tracking, setTracking] = useState(""),
+    [trackingRequest, setTrackingRequest] = useState(0),
     [tracked, setTracked] = useState<Order | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -74,17 +169,30 @@ function App() {
     [install, setInstall] = useState<
       (Event & { prompt: () => Promise<void> }) | null
     >(null);
-  const count = Object.values(cart).reduce((a, b) => a + b, 0),
-    total = products.reduce(
-      (sum, p) => sum + effectivePrice(p) * (cart[p.id] || 0),
-      0,
-    );
+  const cart = bag.items;
+  const activePizza = products.find(
+    (p) => p.id === bag.pizzaId && p.category === "Mini pizza" && cart[p.id],
+  );
+  const count = Object.values(cart).reduce((a, b) => a + b, 0);
+  const { subtotal, discount, total } = priceOrder(
+    Object.entries(cart).map(([productId, quantity]) => ({
+      productId,
+      quantity,
+    })),
+    products,
+  );
   const refreshMenu = () =>
     api<{ products: Product[] }>("/menu").then((r) => setProducts(r.products));
   const refreshUser = () =>
     api<{ user: User | null; googleEnabled: boolean }>("/me").then((r) => {
       setUser(r.user);
       setGoogle(r.googleEnabled);
+      if (managementPath) {
+        if (r.user?.isAdmin) {
+          setView("admin");
+          setModal(null);
+        } else setModal("admin");
+      }
     });
   useEffect(() => {
     Promise.all([refreshMenu(), refreshUser()]).catch((e) =>
@@ -98,12 +206,49 @@ function App() {
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
   useEffect(() => {
-    if (!tracking) return;
+    if (!tracking || modal !== "tracking") return;
     let active = true;
     const refresh = () =>
       api<Order>("/orders/track/" + encodeURIComponent(tracking))
         .then((r) => {
-          if (active) setTracked(r);
+          if (!active) return;
+          setTracked(r);
+          try {
+            localStorage.setItem("tiulu-tracking", tracking);
+          } catch {
+            /* A consulta continua disponível sem persistência no navegador. */
+          }
+        })
+        .catch((e) => {
+          if (!active) return;
+          if (e instanceof ApiError && e.status === 404) {
+            setTracked(null);
+            setTracking("");
+            setTrackingInput("");
+            try {
+              localStorage.removeItem("tiulu-tracking");
+            } catch {
+              /* A referência inválida também foi removida da memória. */
+            }
+            setError(
+              "Pedido não encontrado. O código antigo foi removido deste navegador. Consulte seus pedidos pela conta ou informe outro código.",
+            );
+          } else setError(e.message);
+        });
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [tracking, trackingRequest, modal]);
+  useEffect(() => {
+    if (view !== "orders" && view !== "admin") return;
+    let active = true;
+    const refresh = () =>
+      api<Order[]>("/orders")
+        .then((value) => {
+          if (active) setOrders(value);
         })
         .catch((e) => {
           if (active) setError(e.message);
@@ -114,22 +259,99 @@ function App() {
       active = false;
       clearInterval(timer);
     };
-  }, [tracking]);
+  }, [view]);
   useEffect(() => {
-    if (view !== "orders" && view !== "admin") return;
+    try {
+      localStorage.setItem("tiulu-cart", JSON.stringify(cart));
+      localStorage.setItem(
+        "tiulu-cart-config",
+        JSON.stringify({ combo: bag.combo, pizzaId: bag.pizzaId }),
+      );
+      localStorage.setItem(
+        "tiulu-pizza-ingredients",
+        JSON.stringify(pizzaChoices),
+      );
+    } catch {
+      /* Navegadores podem desabilitar persistência. A sacola segue em memória. */
+    }
+  }, [cart, bag.combo, bag.pizzaId, pizzaChoices]);
+  useEffect(() => {
+    if (!selectedId || !user || modal !== "order") return;
+    let active = true;
     const refresh = () =>
-      api<Order[]>("/orders")
-        .then(setOrders)
-        .catch((e) => setError(e.message));
+      api<Order>("/orders/" + selectedId)
+        .then((o) => {
+          if (active) setSelectedOrder(o);
+        })
+        .catch((e) => {
+          if (active) setError(e.message);
+        });
     refresh();
     const timer = setInterval(refresh, 10000);
-    return () => clearInterval(timer);
-  }, [view]);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [selectedId, user, modal]);
+  function showOrder(id: string) {
+    setSelectedOrder(null);
+    setSelectedId(id);
+    setModal("order");
+  }
+  function updateItems(change: (items: CartItems) => CartItems) {
+    setBag((old) => {
+      const items = change(old.items);
+      return {
+        ...old,
+        items,
+        combo: validCombo(items, old.combo) ? old.combo : null,
+        pizzaId: old.pizzaId && items[old.pizzaId] > 0 ? old.pizzaId : null,
+      };
+    });
+  }
   function add(p: Product, delta = 1) {
-    setCart((old) => ({
+    updateItems((old) =>
+      delta > 0 && !canAddUnit(old, p)
+        ? old
+        : { ...old, [p.id]: Math.max(0, (old[p.id] || 0) + delta) },
+    );
+  }
+  function openCombo(another = false) {
+    if (!chooseCombo(bag, products, another)) {
+      setError("Não há estoque dos dois itens para montar este combo agora.");
+      return;
+    }
+    setBag((old) => chooseCombo(old, products, another) ?? old);
+    setModal("cart");
+  }
+  function changeCombo(pastel: Product, drink: Product) {
+    setBag((old) => {
+      if (!old.combo || !validCombo(old.items, old.combo)) return old;
+      const withPastel = replaceCartUnit(old.items, old.combo.pastelId, pastel);
+      const items =
+        withPastel && replaceCartUnit(withPastel, old.combo.drinkId, drink);
+      return items
+        ? { ...old, items, combo: { pastelId: pastel.id, drinkId: drink.id } }
+        : old;
+    });
+  }
+  function openPizza(product: Product) {
+    if (!cart[product.id] && !canAddUnit(cart, product)) return;
+    setBag((old) => ({
       ...old,
-      [p.id]: Math.max(0, Math.min(20, p.stock, (old[p.id] || 0) + delta)),
+      items: old.items[product.id]
+        ? old.items
+        : { ...old.items, [product.id]: 1 },
+      pizzaId: product.id,
     }));
+    setModal("cart");
+  }
+  function changePizza(product: Product) {
+    setBag((old) => {
+      if (!old.pizzaId) return old;
+      const items = replaceCartUnit(old.items, old.pizzaId, product);
+      return items ? { ...old, items, pizzaId: product.id } : old;
+    });
   }
   async function perform(work: () => Promise<void>) {
     setBusy(true);
@@ -146,25 +368,64 @@ function App() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     await perform(async () => {
-      const scheduled = data.get("scheduledAt") as string;
-      const result = await api<{ token: string }>("/orders", {
+      if (!user) {
+        setModal("login");
+        return;
+      }
+      const location = await new Promise<{
+        latitude: number;
+        longitude: number;
+        accuracy: number;
+        timestamp: number;
+      }>((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(
+            new Error(
+              "Este navegador não oferece localização. Use um navegador com localização para pedir no campus.",
+            ),
+          );
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          ({ coords, timestamp }) =>
+            resolve({
+              latitude: coords.latitude,
+              longitude: coords.longitude,
+              accuracy: coords.accuracy,
+              timestamp,
+            }),
+          (error) =>
+            reject(
+              new Error(
+                error.code === 1
+                  ? "Permita o acesso à localização nas configurações do navegador para pedir no campus."
+                  : "Não foi possível obter sua localização. Ative a localização precisa e tente novamente.",
+              ),
+            ),
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
+        );
+      });
+      const result = await api<{ id: string }>("/orders", {
         method: "POST",
         body: JSON.stringify({
           name: data.get("name"),
           items: Object.entries(cart)
             .filter(([, quantity]) => quantity > 0)
-            .map(([productId, quantity]) => ({ productId, quantity })),
+            .map(([productId, quantity]) => ({
+              productId,
+              quantity,
+              ingredients: pizzaChoices[productId] || [],
+            })),
           notes: data.get("notes"),
           paymentMethod: data.get("paymentMethod"),
-          ...(scheduled
-            ? { scheduledAt: new Date(scheduled).toISOString() }
-            : {}),
+          pickupAccepted: data.get("pickupAccepted") === "on",
+          location,
         }),
       });
-      localStorage.setItem("tiulu-tracking", result.token);
-      setTracking(result.token);
-      setCart({});
-      setModal("tracking");
+      setBag({ items: {}, combo: null, pizzaId: null });
+      setPizzaChoices({});
+      setView("orders");
+      showOrder(result.id);
       await refreshMenu();
     });
   }
@@ -175,18 +436,27 @@ function App() {
         body: JSON.stringify(body),
       });
       setOrders(await api<Order[]>("/orders"));
+      if (selectedId)
+        setSelectedOrder(await api<Order>("/orders/" + selectedId));
+      await refreshMenu();
     });
   }
-  const filtered = products.filter(
-    (p) =>
-      (category === "Todos" ||
-        (category === "Promoções"
-          ? Boolean(p.sale_price)
-          : category === "Favoritos"
-            ? p.featured
-            : p.category === category)) &&
-      p.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+  const filtered = groupMenuProducts(products).filter((group) =>
+    group.variants.some(
+      (p) =>
+        (category === "Todos" ||
+          (category === "Promoções"
+            ? Boolean(p.sale_price)
+            : category === "Favoritos"
+              ? p.featured
+              : p.category === category)) &&
+        p.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+    ),
   );
+  const showCombo =
+    category === "Promoções" &&
+    !search.trim() &&
+    products.some((p) => p.combo_size);
   return (
     <>
       <div className="topline">
@@ -207,8 +477,14 @@ function App() {
           >
             Cardápio
           </button>
-          <button onClick={() => setModal("tracking")}>
-            Acompanhar pedido
+          <button
+            onClick={() =>
+              user
+                ? setView(user.isAdmin ? "admin" : "orders")
+                : setModal("login")
+            }
+          >
+            Meus pedidos
           </button>
           <button onClick={() => setModal("loyalty")}>
             Fidelidade <span className="new">NOVO</span>
@@ -230,6 +506,10 @@ function App() {
                   perform(async () => {
                     await api("/auth/logout", { method: "POST" });
                     setUser(null);
+                    setOrders([]);
+                    setSelectedId(null);
+                    setSelectedOrder(null);
+                    setModal(null);
                     setView("menu");
                   })
                 }
@@ -271,7 +551,8 @@ function App() {
                 <p>
                   Crocante, quentinho e com recheio de verdade.
                   <br />
-                  Peça por aqui e aproveite seu intervalo sem fila.
+                  Peça de onde estiver no IBILCE e passe para retirar quando
+                  estiver pronto.
                 </p>
                 <a className="primary" href="#cardapio">
                   Bora escolher o meu <ArrowRight size={18} />
@@ -282,7 +563,7 @@ function App() {
                   </span>
                   <i />{" "}
                   <span>
-                    <CheckCircle2 size={16} /> Pedido sem cadastro
+                    <CheckCircle2 size={16} /> Preparo antes da sua chegada
                   </span>
                 </div>
               </div>
@@ -317,7 +598,7 @@ function App() {
               <span>
                 <Store size={19} />
                 <strong>Seu ponto de encontro</strong>
-                <small>Retire direto no balcão</small>
+                <small>Peça no campus e acompanhe o preparo</small>
               </span>
               <span>
                 <Clock size={19} />
@@ -327,19 +608,26 @@ function App() {
               <span>
                 <Ticket size={19} />
                 <strong>Pix ou cartão na retirada</strong>
-                <small>Simples, rápido e sem mensalidade</small>
+                <small>Pague no balcão ao retirar</small>
               </span>
             </section>
             <section id="cardapio" className="menu-section">
               <div className="section-heading">
                 <div>
-                  <div className="eyebrow red">
-                    ESCOLHA SEU PRÓXIMO FAVORITO
-                  </div>
                   <h2>
-                    O que vai ser hoje? <span>😋</span>
+                    {category === "Promoções"
+                      ? "Promoções"
+                      : category === "Todos"
+                        ? "Nosso cardápio"
+                        : category === "Favoritos"
+                          ? "Mais pedidos"
+                          : category}
                   </h2>
-                  <p>Tem um pastel perfeito para a sua fome.</p>
+                  <p>
+                    {category === "Promoções"
+                      ? "Uma dupla boa demais para deixar passar."
+                      : "Escolha o que combina com a sua fome."}
+                  </p>
                 </div>
                 <label className="search">
                   <Search size={18} />
@@ -353,90 +641,43 @@ function App() {
               </div>
               <div className="filters" role="group" aria-label="Categorias">
                 {[
-                  "Todos",
-                  "Salgados",
-                  "Doces",
-                  "Bebidas",
-                  "Favoritos",
-                  "Promoções",
-                ].map((c, i) => (
+                  ["Promoções", "%"],
+                  ["Todos", "✦"],
+                  ["Pastéis", "🥟"],
+                  ["Salgados", "🍗"],
+                  ["Mini pizza", "🍕"],
+                  ["Doces", "🍫"],
+                  ["Bebidas", "🥤"],
+                  ["Favoritos", "♡"],
+                ].map(([c, icon]) => (
                   <button
                     key={c}
                     className={category === c ? "selected" : ""}
+                    aria-pressed={category === c}
                     onClick={() => setCategory(c)}
                   >
-                    {["✦", "🥟", "🍫", "🥤", "♡", "%"][i]}{" "}
-                    {c === "Favoritos" ? "Mais pedidos" : c}
+                    {icon} {c === "Favoritos" ? "Mais pedidos" : c}
                   </button>
                 ))}
               </div>
+              {showCombo && (
+                <ComboCard
+                  available={Boolean(chooseCombo(bag, products))}
+                  onChoose={() => openCombo()}
+                />
+              )}
               <div className="product-grid">
-                {filtered.map((p) => (
-                  <article className="product" key={p.id}>
-                    <div
-                      className={
-                        "product-art " +
-                        (p.category === "Bebidas"
-                          ? "drink"
-                          : p.category === "Doces"
-                            ? "sweet"
-                            : "")
-                      }
-                    >
-                      <span className="food-emoji">{p.emoji}</span>
-                      {p.featured && (
-                        <span className="popular">
-                          <Flame size={12} /> QUERIDINHO
-                        </span>
-                      )}
-                      {(!p.available || p.stock === 0) && (
-                        <span className="sold-out">Esgotado</span>
-                      )}
-                    </div>
-                    <div className="product-body">
-                      <h3>{p.name}</h3>
-                      <p>{p.description}</p>
-                      <div className="product-bottom">
-                        <strong>
-                          {p.sale_price && (
-                            <del className="original-price">
-                              {money(p.price)}
-                            </del>
-                          )}
-                          {money(effectivePrice(p))}
-                        </strong>
-                        {cart[p.id] ? (
-                          <div className="quantity">
-                            <button
-                              aria-label={"Remover " + p.name}
-                              onClick={() => add(p, -1)}
-                            >
-                              <Minus size={15} />
-                            </button>
-                            <span>{cart[p.id]}</span>
-                            <button
-                              aria-label={"Adicionar " + p.name}
-                              onClick={() => add(p)}
-                            >
-                              <Plus size={15} />
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="add"
-                            disabled={!p.available || p.stock === 0}
-                            aria-label={"Adicionar " + p.name}
-                            onClick={() => add(p)}
-                          >
-                            <Plus size={20} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </article>
+                {filtered.map((product) => (
+                  <MenuProductCard
+                    key={product.key}
+                    product={product}
+                    cart={cart}
+                    add={add}
+                    onConfigure={openPizza}
+                  />
                 ))}
               </div>
-              {!filtered.length && (
+              {!filtered.length && !showCombo && (
                 <p className="empty">
                   Nenhum sabor encontrado. Tente outra busca.
                 </p>
@@ -466,7 +707,12 @@ function App() {
                 <h1>
                   {view === "admin" ? "Cozinha em movimento." : "Seus pedidos."}
                 </h1>
-                <p>Atualização automática a cada 10 segundos.</p>
+                <p>
+                  {view === "admin"
+                    ? "Prepare os pedidos recebidos e confirme o pagamento na retirada. "
+                    : "Peça pelo campus e acompanhe até ficar pronto para retirar. "}
+                  Atualizamos a cada 10 segundos.
+                </p>
               </div>
               <button className="outline" onClick={() => setView("menu")}>
                 Voltar ao cardápio
@@ -474,15 +720,12 @@ function App() {
             </div>
             {view === "admin" && (
               <>
+                <QRScanner onRead={showOrder} />
                 <div className="stats">
                   <div>
                     Pedidos ativos
                     <strong>
-                      {
-                        orders.filter(
-                          (o) => !["completed", "cancelled"].includes(o.status),
-                        ).length
-                      }
+                      {orders.filter((o) => !isClosed(o.status)).length}
                     </strong>
                   </div>
                   <div>
@@ -571,105 +814,76 @@ function App() {
                 </details>
               </>
             )}
-            {orders.length === 0 && (
-              <p className="empty">Os pedidos aparecerão aqui.</p>
+            <div
+              className="filters order-filters"
+              role="group"
+              aria-label="Filtrar pedidos"
+            >
+              {[
+                ["active", "Em andamento"],
+                ["closed", "Finalizados"],
+                ["all", "Todos"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  className={orderFilter === value ? "selected" : ""}
+                  onClick={() => setOrderFilter(value)}
+                >
+                  {label} ·{" "}
+                  {
+                    orders.filter(
+                      (o) =>
+                        value === "all" ||
+                        (value === "closed"
+                          ? isClosed(o.status)
+                          : !isClosed(o.status)),
+                    ).length
+                  }
+                </button>
+              ))}
+            </div>
+            {orders.filter(
+              (o) =>
+                orderFilter === "all" ||
+                (orderFilter === "closed"
+                  ? isClosed(o.status)
+                  : !isClosed(o.status)),
+            ).length === 0 && (
+              <p className="empty">
+                Nenhum pedido nesta lista. Escolha seu pastel no cardápio e
+                envie seu pedido para retirada.
+              </p>
             )}
             <div className="orders-grid">
-              {orders.map((o) => (
-                <article className="order-card" key={o.id}>
-                  <div className="order-title">
-                    <strong>#{o.id.slice(0, 8)}</strong>
-                    <span className={"status " + o.status}>
-                      {labels[o.status]}
-                    </span>
-                  </div>
-                  <h3>{o.customer_name}</h3>
-                  <p>
-                    {new Date(o.created_at).toLocaleString("pt-BR")} ·{" "}
-                    {money(o.total)}
-                  </p>
-                  <p>
-                    {o.scheduled_at
-                      ? "Agendado: " +
-                        new Date(o.scheduled_at).toLocaleString("pt-BR")
-                      : "Retirada assim que ficar pronto"}
-                  </p>
-                  <p>
-                    {o.payment_method.toUpperCase()} ·{" "}
-                    {o.payment_status === "paid"
-                      ? "Pago"
-                      : "Pagamento pendente na retirada"}
-                  </p>
-                  {o.notes && <p>Observações: {o.notes}</p>}
-                  {view === "admin" && (
-                    <>
-                      <button
-                        className="outline"
-                        onClick={() =>
-                          perform(async () => {
-                            const items = await api<
-                              NonNullable<Order["items"]>
-                            >("/admin/orders/" + o.id + "/items");
-                            setOrders((old) =>
-                              old.map((x) =>
-                                x.id === o.id ? { ...x, items } : x,
-                              ),
-                            );
-                          })
-                        }
-                      >
-                        Ver itens
-                      </button>
-                      {o.items?.map((i, index) => (
-                        <p key={index}>
-                          {i.quantity}× {i.name}
-                        </p>
-                      ))}
-                      <div className="order-actions">
-                        {o.payment_status !== "paid" &&
-                          o.status !== "cancelled" && (
-                            <button
-                              disabled={busy}
-                              onClick={() => updateOrder(o.id, { paid: true })}
-                            >
-                              Confirmar pagamento recebido
-                            </button>
-                          )}
-                        {!["completed", "cancelled"].includes(o.status) && (
-                          <button
-                            disabled={busy}
-                            onClick={() =>
-                              updateOrder(o.id, {
-                                status: {
-                                  received: "preparing",
-                                  preparing: "ready",
-                                  ready: "completed",
-                                }[o.status],
-                              })
-                            }
-                          >
-                            {o.status === "received"
-                              ? "Começar preparo"
-                              : o.status === "preparing"
-                                ? "Marcar pronto"
-                                : "Entregar"}
-                          </button>
-                        )}
-                        {o.status === "received" && (
-                          <button
-                            disabled={busy}
-                            onClick={() =>
-                              updateOrder(o.id, { status: "cancelled" })
-                            }
-                          >
-                            Cancelar pedido
-                          </button>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </article>
-              ))}
+              {orders
+                .filter(
+                  (o) =>
+                    orderFilter === "all" ||
+                    (orderFilter === "closed"
+                      ? isClosed(o.status)
+                      : !isClosed(o.status)),
+                )
+                .map((o) => (
+                  <article className="order-card" key={o.id}>
+                    {view === "admin" && <h3>{o.customer_name}</h3>}
+                    <OrderSummary order={o} />
+                    <button
+                      className="outline full"
+                      onClick={() => showOrder(o.id)}
+                    >
+                      {o.status === "awaiting_arrival"
+                        ? "Ver pedido e QR Code"
+                        : "Ver detalhes do pedido"}
+                    </button>
+                    {view === "admin" && (
+                      <OrderActions
+                        order={o}
+                        busy={busy}
+                        update={updateOrder}
+                      />
+                    )}
+                  </article>
+                ))}
             </div>
           </section>
         )}
@@ -679,6 +893,14 @@ function App() {
           ◒ tiulu<span className="brand-sub">PASTÉIS & BONS MOMENTOS</span>
         </a>
         <p>Um bom pastel. Um intervalo melhor.</p>
+        <a
+          className="photo-credits"
+          href="/images/creditos.html"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Créditos das fotos
+        </a>
         <button
           onClick={() =>
             install
@@ -690,7 +912,6 @@ function App() {
         >
           <Smartphone size={16} /> Instalar Tiulu
         </button>
-        <button onClick={() => setModal("admin")}>Área do pasteleiro</button>
       </footer>
       {count > 0 && (
         <button className="floating-cart" onClick={() => setModal("cart")}>
@@ -726,6 +947,30 @@ function App() {
                 <p>Sua sacola está esperando um pastel. Escolha no cardápio!</p>
               ) : (
                 <form onSubmit={checkout}>
+                  {bag.combo && validCombo(cart, bag.combo) && (
+                    <CartComboOptions
+                      products={products}
+                      cart={cart}
+                      combo={bag.combo}
+                      onChange={changeCombo}
+                      onAddAnother={() => openCombo(true)}
+                    />
+                  )}
+                  {activePizza && (
+                    <CartPizzaOptions
+                      products={products}
+                      cart={cart}
+                      pizza={activePizza}
+                      onChange={changePizza}
+                      ingredients={pizzaChoices[activePizza.id] || []}
+                      setIngredients={(choices) =>
+                        setPizzaChoices((old) => ({
+                          ...old,
+                          [activePizza.id]: choices,
+                        }))
+                      }
+                    />
+                  )}
                   {products
                     .filter((p) => cart[p.id])
                     .map((p) => (
@@ -733,6 +978,28 @@ function App() {
                         <span>
                           {p.name}
                           <small>{money(effectivePrice(p))}</small>
+                          {p.category === "Mini pizza" && (
+                            <button
+                              type="button"
+                              className="edit-item"
+                              onClick={() =>
+                                setBag((old) => ({ ...old, pizzaId: p.id }))
+                              }
+                            >
+                              Editar mini pizza
+                            </button>
+                          )}
+                          {p.customizable && (
+                            <small>
+                              Molho de tomate
+                              {pizzaChoices[p.id]?.length
+                                ? " + " +
+                                  pizzaChoices[p.id]
+                                    .map(ingredientLabel)
+                                    .join(", ")
+                                : " (sem ingredientes extras)"}
+                            </small>
+                          )}
                         </span>
                         <div className="quantity">
                           <button
@@ -746,6 +1013,7 @@ function App() {
                           <button
                             type="button"
                             aria-label="Aumentar"
+                            disabled={!canAddUnit(cart, p)}
                             onClick={() => add(p)}
                           >
                             <Plus size={15} />
@@ -753,6 +1021,16 @@ function App() {
                         </div>
                       </div>
                     ))}
+                  {discount > 0 && (
+                    <div className="order-discount">
+                      <p>
+                        Subtotal <strong>{money(subtotal)}</strong>
+                      </p>
+                      <p>
+                        Desconto dos combos <strong>−{money(discount)}</strong>
+                      </p>
+                    </div>
+                  )}
                   <div className="cart-total">
                     Total <strong>{money(total)}</strong>
                   </div>
@@ -767,14 +1045,19 @@ function App() {
                       autoComplete="name"
                     />
                   </label>
-                  <label>
-                    Agendar retirada (opcional)
-                    <input name="scheduledAt" type="datetime-local" />
-                    <small>
-                      Sem agendamento: preparo assim que o pedido for recebido.
-                      Seg a sex, 9h às 21h.
-                    </small>
-                  </label>
+                  <div className="counter-notice">
+                    <strong>Peça agora e retire quando estiver pronto</strong>
+                    <p>
+                      O preparo pode começar após o envio. Retire no Tiulu
+                      Pastéis, nos fundos da ASTAIBILCE, no IBILCE/UNESP em São
+                      José do Rio Preto.
+                    </p>
+                    <p>
+                      Ao enviar, permita sua localização para confirmar que está
+                      no campus. Sua posição é usada apenas nesta verificação e
+                      não é armazenada.
+                    </p>
+                  </div>
                   <label>
                     Pagamento na retirada
                     <select name="paymentMethod">
@@ -794,11 +1077,56 @@ function App() {
                     Nenhum valor será cobrado pelo site. Confirme o pagamento
                     diretamente no balcão.
                   </p>
-                  <button className="primary full" disabled={busy}>
-                    {busy ? "Enviando…" : "Fazer pedido"}
-                    <ArrowRight size={18} />
-                  </button>
+                  <label className="pickup-accept">
+                    <input name="pickupAccepted" type="checkbox" required />
+                    Estou ciente de que a retirada é pessoal no balcão dentro do
+                    campus, sem entrega ou retirada por motofrete.
+                  </label>
+                  {user ? (
+                    <button className="primary full" disabled={busy}>
+                      {busy
+                        ? "Verificando localização e enviando…"
+                        : "Fazer pedido para retirada"}
+                      <ArrowRight size={18} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="primary full"
+                      onClick={() => setModal("login")}
+                    >
+                      Entrar para registrar o pedido
+                      <ArrowRight size={18} />
+                    </button>
+                  )}
                 </form>
+              )}
+            </>
+          )}
+          {modal === "order" && (
+            <>
+              <span className="eyebrow red">
+                SEU INTERVALO COM PASTEL QUENTINHO
+              </span>
+              <h2>{user?.isAdmin ? "Conferir pedido" : "Seu pedido"}</h2>
+              {selectedOrder ? (
+                <>
+                  {user?.isAdmin && <h3>{selectedOrder.customer_name}</h3>}
+                  <OrderSummary
+                    order={selectedOrder}
+                    detailed
+                    showQR={!user?.isAdmin}
+                  />
+                  {user?.isAdmin && (
+                    <OrderActions
+                      order={selectedOrder}
+                      busy={busy}
+                      update={updateOrder}
+                    />
+                  )}
+                </>
+              ) : (
+                <p role="status">Carregando pedido…</p>
               )}
             </>
           )}
@@ -818,15 +1146,18 @@ function App() {
                     setError("Informe o código completo de acompanhamento.");
                     return;
                   }
+                  setError("");
+                  setTracked(null);
                   setTracking(value);
-                  localStorage.setItem("tiulu-tracking", value);
+                  setTrackingRequest((request) => request + 1);
                 }}
               >
                 <label>
                   Código de acompanhamento
                   <input
                     name="token"
-                    defaultValue={tracking}
+                    value={trackingInput}
+                    onChange={(event) => setTrackingInput(event.target.value)}
                     required
                     maxLength={64}
                   />
@@ -844,6 +1175,11 @@ function App() {
                       ? "Pagamento confirmado"
                       : "Pague na retirada"}
                   </p>
+                  {Boolean(tracked.discount_total) && (
+                    <p>
+                      Desconto dos combos: −{money(tracked.discount_total || 0)}
+                    </p>
+                  )}
                   {tracked.scheduled_at && (
                     <p>
                       Retirada:{" "}
@@ -878,6 +1214,9 @@ function App() {
                   {tracked.items?.map((i, index) => (
                     <p key={index}>
                       {i.quantity}× {i.name}
+                      {Boolean(i.ingredients?.length) && (
+                        <small> · {i.ingredients?.join(", ")}</small>
+                      )}
                     </p>
                   ))}
                   <button
@@ -916,9 +1255,12 @@ function App() {
                   : "Seu intervalo, do seu jeito."}
               </h2>
               <p>
-                Entre para guardar seu histórico e acompanhar seus pedidos
-                concluídos.
+                Entre para fazer pedidos no campus, retirar no Tiulu e
+                acompanhar o preparo.
               </p>
+              <button className="outline" onClick={() => setModal("tracking")}>
+                Consultar pedido antigo por código
+              </button>
               {user ? (
                 <>
                   <p className="points">
@@ -952,7 +1294,8 @@ function App() {
                     </span>
                   </a>
                   <p className="muted">
-                    Para pedir um pastel, você não precisa criar uma conta.
+                    Entre para registrar seu pedido. Sua sacola fica guardada
+                    neste aparelho durante o login.
                   </p>
                 </>
               )}
