@@ -1,34 +1,56 @@
 # Conceitos fundamentais
 
-Aplicação web responsiva com PWA para pedidos de retirada de uma única loja. O
-[glossário](../../CONTEXT.md) fixa a terminologia. Produtos e horários iniciais são exemplos e
-precisam de revisão do estabelecimento.
+Aplicação responsiva com PWA para uma única pastelaria. O [glossário](../../CONTEXT.md)
+fixa a terminologia. O cliente pede no campus para encontrar seu pedido pronto na retirada.
 
 ## Comportamento implementado
 
-- Cardápio com busca, categorias, destaques editoriais, estoque e disponibilidade.
-- Promoção por produto: gestor define preço positivo e menor que o normal.
-- Sacola e pedido sem cadastro; retirada imediata durante o expediente ou agendada de
-  15 minutos a 7 dias. Expediente: segunda a sexta, 9h–21h, `America/Sao_Paulo`.
-- Total em centavos recalculado pelo servidor. Máximo de 30 linhas e 20 unidades por produto;
-  IDs repetidos são rejeitados.
-- Acompanhamento por código secreto de 256 bits, guardado no navegador, com consulta a cada
-  10 segundos. O código é necessário para acompanhar em outro aparelho.
-- Painel autenticado com os últimos 100 pedidos, itens, observações, indicadores desse conjunto,
-  confirmação de pagamento e ajuste de estoque/disponibilidade.
-- Login Google, histórico dos pedidos feitos autenticado e contagem de fidelidade.
-- PWA com manifest, ícones e página offline. Não cria pedidos offline.
+- Cardápio público com nove sabores de pastel, grande (R$ 14) ou pequeno (R$ 8), quatro
+  salgados de R$ 8, três mini pizzas de R$ 8 e doze bebidas. Pastéis salgados ficam em Pastéis;
+  chocolate e queijo com goiabada em Doces. Um cartão por sabor permite escolher tamanho,
+  mantendo preços e estoques por variante. Novos produtos começam sem estoque.
+- Aplicação abre em Promoções. O combo aparece somente nessa aba; Todos contém apenas avulsos.
+  Cartão com foto abre a sacola com pastel e refri inclusos. Sabor, tamanho e bebida são editáveis
+  ali; reabrir não duplica o combo, e adicionar outro é uma ação explícita.
+- Promoção: pastel de qualquer sabor + Coca-Cola ou Guaraná de 200 ml,
+  R$ 15 no grande e R$ 10 no pequeno. Desconto automático na sacola, pareando maior economia
+  primeiro, sem aumentar uma soma avulsa já menor. Regras em `src/domain/catalog.ts`.
+- Toda mini pizza leva molho de tomate. A personalizada aceita até três recheios distintos
+  da lista apresentada, sem adicional; sabor e ingredientes são escolhidos na sacola, sem
+  formulário na grade. A escolha vale para todas as unidades dessa pizza na sacola.
+- Busca, categorias, destaques, promoções, estoque e disponibilidade.
+- Sacola preservada no aparelho durante login; criar pedido exige conta Google, localização
+  recente dentro do campus IBILCE e aceite de retirada pessoal, sem entrega ou motofrete.
+  Expediente: segunda a sexta, 9h–21h, São Paulo.
+- Pedido em `received` com reserva imediata e atômica de estoque; até três ativos por conta.
+  O gestor pode preparar antes da chegada, sem aguardar confirmação de presença ou pagamento.
+- Total calculado no servidor em centavos, até 30 linhas/20 unidades por produto, sem duplicatas.
+- Histórico com itens, total, pagamento, detalhes, etapas, eventos e QR opcional para identificar
+  o pedido na retirada. Atualização a cada dez segundos. O QR não comprova pagamento.
+- Gestão em `/gestao`, sem link público. Leitor de QR por câmera e busca manual, detalhes,
+  estados, pagamento e estoque. Entrega exige pagamento confirmado.
+- Acompanhamento antigo por código secreto continua disponível para pedidos legados, após
+  consulta explícita. Código salvo não dispara consulta ao abrir o site; resposta 404 remove
+  a referência local inválida e encerra as tentativas, sem apagar pedidos do servidor.
+- Fidelidade conta pedidos pagos e retirados. PWA com página offline, sem criação de pedidos offline.
+- Tiulu nos fundos da ASTAIBILCE, conforme indicação do responsável.
 
 ## Limites atuais
 
-- Pix e cartão são indicações de pagamento presencial, pendente até confirmação do gestor.
-- Verocard está bloqueado; não há cobrança online, QR Pix ou aprovação automática.
-- Fidelidade conta pedidos autenticados pagos e entregues; resgate e recompensas não existem.
-- Não há CRUD completo de produtos nem ajuste de expediente pelo painel.
-- Não há recuperação de pedido anônimo sem código nem associação retroativa a uma conta.
-- Criação não é idempotente: resposta perdida exige conferência antes de reenviar.
-- Pedidos agendados reservam estoque imediatamente; abandonados exigem cancelamento manual.
-- Não há notificações externas, reembolso automático ou relatório financeiro completo.
-- Instalação da PWA depende do navegador e de HTTPS ou localhost; validar em aparelhos reais.
+- Pagamento presencial por Pix ou cartão; não há checkout online, QR Pix, webhook ou reembolso.
+- Verocard bloqueado; fidelidade sem resgate/recompensas.
+- Login não comprova vínculo institucional e localização do navegador pode ser falsificada.
+  A posição é usada somente no envio e não é persistida. O contorno OSM requer homologação
+  no campus; posições imprecisas ou próximas das bordas podem impedir o envio.
+- Retirada pessoal depende da conferência do atendente. QR pode ser compartilhado.
+- Sem CRUD completo de produtos ou ajuste de expediente no painel.
+- Criação não idempotente; conferir histórico antes de reenviar após perda de conexão.
+- Pedidos novos não expiram. Pré-pedidos antigos conservam expiração e confirmação no balcão;
+  pedidos legados preservam suas reservas e agendamentos originais.
+- Sem notificações externas ou relatório financeiro completo. Validar câmera/PWA em aparelhos reais.
 
-Fontes: `src/domain/`, `src/server/app.ts`, `src/client/main.tsx` e `public/sw.js`.
+[Fluxo de pedidos](fluxo-de-pedidos.md) detalha localização, estados e compatibilidade;
+[pagamentos](../integracoes/pagamentos.md) detalha o recebimento presencial.
+
+Fotos reais de referência são ilustrativas, não fotos da loja. Fontes, licenças e limites de
+representação: [imagens do cardápio](../integracoes/imagens-do-cardapio.md).

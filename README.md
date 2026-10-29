@@ -11,8 +11,11 @@
 Aplicação web responsiva com PWA para pedidos de retirada em uma pastelaria universitária.
 React + TypeScript + Vite, API Fastify e PostgreSQL. Monólito modular para uma única loja.
 
-Cardápio, sacola, agendamento, acompanhamento e painel de gestão. Pix e cartão são pagos no
-balcão; o gestor confirma o recebimento. Catálogo e expediente iniciais são exemplos. Recursos
+Cardápio público, sacola e pedido antecipado para retirada, com login, localização no campus
+IBILCE e acompanhamento. O estoque é reservado no envio e o preparo pode começar antes da
+chegada; Pix e cartão são pagos no balcão. Tiulu nos fundos da ASTAIBILCE.
+Salgados e mini pizzas a R$ 8; combos pastel + refri 200 ml a R$ 15 (grande) ou R$ 10 (pequeno).
+Gestão em `/gestao`, sem link público. Novo catálogo exige informar estoque real no painel. Recursos
 e limites: [conceitos fundamentais](docs/arquitetura/conceitos-fundamentais.md).
 
 ## Executar localmente

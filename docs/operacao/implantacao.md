@@ -2,7 +2,7 @@
 
 Requer Docker Compose, domínio com HTTPS e proxy reverso (Caddy ou Nginx). Nenhum deploy é feito automaticamente pelo projeto.
 
-1. Copie `.env.example` para `.env`. Configure `POSTGRES_PASSWORD` forte (use hex para evitar caracteres especiais em URI), `APP_ORIGIN=https://seu-dominio`, Google e/ou senha de gestão com 16+ caracteres.
+1. Copie `.env.example` para `.env`. Configure `POSTGRES_PASSWORD` forte (use hex para evitar caracteres especiais em URI), `APP_ORIGIN=https://seu-dominio`, Google (obrigatório para novos pedidos) e senha de gestão opcional com 16+ caracteres.
 2. Execute `docker compose up -d --build`. O banco é privado na rede Docker; a aplicação só escuta no loopback da VPS. O serviço migrate aplica a migração antes da aplicação iniciar.
 3. Configure proxy TLS para `127.0.0.1:3000`. Preserve Host e Origin. Desative logs de acesso em `/api/orders/track/*` para não gravar tokens. Não exponha a porta 5432.
 4. Configure redirecionamento Google conforme [Google OAuth](../integracoes/google-oauth.md). Teste login, permissões de gestor, pedido e retirada em HTTPS.
@@ -20,13 +20,18 @@ Caddy deve ser instalado/configurado na VPS e as portas 80/443 liberadas. Senhas
 
 ## Backup e restauração
 
-Use `pg_dump` diário em formato custom, com armazenamento criptografado fora da VPS e retenção definida. Teste restauração em banco isolado. O volume `postgres_data` persiste reinícios; não execute `docker compose down -v` em produção. Atualizações devem ter backup e revisão de migrações; esta versão possui apenas migração inicial idempotente. Restauração de pedidos interfere em estoque e pagamentos: reconcile antes de reabrir.
+Use `pg_dump` diário em formato custom, com armazenamento criptografado fora da VPS e retenção definida. Teste restauração em banco isolado. O volume `postgres_data` persiste reinícios; não execute `docker compose down -v` em produção. Atualizações devem ter backup e revisão de migrações; esta versão aplica migrações incrementais registradas em `schema_migrations`. Restauração de pedidos interfere em estoque e pagamentos: reconcile antes de reabrir.
 
 ## Checklist de homologação
 
-- Substituir cardápio, preços e horários de exemplo; conferir catálogo e estoque.
+- Conferir os preços/tamanhos/bebidas e informar o estoque real dos novos produtos, inicialmente zero.
+- Abrir `/gestao` diretamente e instalar a PWA; testar câmera em HTTPS e consulta manual.
 - Criar gestor; validar que aluno/anônimo não altera pedidos.
-- Pedido anônimo, agendado e autenticado; acompanhar estados em dois aparelhos.
+- Pedido autenticado dentro do IBILCE, aceite de retirada e acompanhamento em dois aparelhos. Testar localização negada, fora do campus e imprecisa.
+- Homologar o contorno OSM e a precisão em entradas, salas e ASTAIBILCE; confirmar indicação do Tiulu nos fundos da associação.
+- Preservar validade e confirmação presencial dos pré-pedidos antigos.
+- Verificar reserva de estoque no envio e preparo antes da chegada; repetir leitura de QR não deve iniciar preparo nem alterar estoque.
+- Confirmar pagamento antes de entregar; cancelamento antes do preparo repõe estoque uma única vez.
 - Confirmar Pix/cartão apenas após verificar recebimento real; não aceitar Verocard enquanto bloqueado.
 - Validar concorrência e limites de estoque, comunicação de falha de rede e códigos perdidos.
 - Definir regras de resgate de fidelidade e revisar preços promocionais antes de anunciá-las, política de privacidade e retenção de nomes/histórico.

@@ -29,6 +29,7 @@ Cada fato tem uma fonte principal; outras páginas resumem e apontam para ela.
 - [Configuração local](operacao/configuracao-local.md)
 - [Implantação e recuperação](operacao/implantacao.md)
 - [Observabilidade](operacao/observabilidade.md)
+- [Imagens do cardápio](integracoes/imagens-do-cardapio.md) — fontes, créditos e uso de fotos ilustrativas.
 - [Google OAuth](integracoes/google-oauth.md)
 - [Pagamentos](integracoes/pagamentos.md)
 

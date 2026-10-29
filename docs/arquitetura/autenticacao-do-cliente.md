@@ -1,10 +1,10 @@
 # Autenticação do cliente
 
-| Identidade          | Pode fazer                                                         |
-| ------------------- | ------------------------------------------------------------------ |
-| Anônimo             | ver cardápio, criar pedido e acompanhar com o código secreto       |
-| Cliente autenticado | acesso anterior e histórico dos próprios pedidos autenticados      |
-| Gestor              | listar pedidos e itens, operar estados/pagamento e ajustar estoque |
+| Identidade          | Pode fazer                                                                 |
+| ------------------- | -------------------------------------------------------------------------- |
+| Anônimo             | ver cardápio e acompanhar pedidos antigos com código secreto               |
+| Cliente autenticado | criar pedido no campus e consultar histórico/detalhes dos próprios pedidos |
+| Gestor              | listar pedidos e itens, operar estados/pagamento e ajustar estoque         |
 
 Sessões usam cookie HttpOnly, SameSite=Lax e Secure em produção; a credencial é aleatória, com
 hash armazenado no banco e expiração de sete dias. Autorização acontece na API.
@@ -23,3 +23,11 @@ publicamente. Pedidos anônimos não são associados retroativamente a contas.
 
 Ao revogar gestor, remover suas sessões no banco; mudar `ADMIN_EMAILS` afeta novos logins.
 Rate limiting é local ao processo e exige revisão antes de múltiplas réplicas.
+
+A navegação pública não exibe acesso à gestão. O gestor abre `/gestao` diretamente ou recebe
+redirecionamento após login Google autorizado. Ocultar o link não substitui autorização na API.
+QR contém apenas identificador, sem autorização embutida; detalhes exigem titular ou gestor.
+
+A criação também exige localização recente validada pela API, conforme [fluxo de pedidos](fluxo-de-pedidos.md).
+Autenticação não comprova vínculo com a universidade; coordenadas do navegador não são prova
+de presença física e não são persistidas. Consultar histórico não exige nova geolocalização.
